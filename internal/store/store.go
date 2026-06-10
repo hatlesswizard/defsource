@@ -39,6 +39,9 @@ type LibraryStore interface {
 
 	// ListLibraries returns all library records in the store.
 	ListLibraries(ctx context.Context) ([]LibraryRecord, error)
+
+	// ListLibrariesByLanguage returns library records filtered by language.
+	ListLibrariesByLanguage(ctx context.Context, language string) ([]LibraryRecord, error)
 }
 
 // EntityStore handles entity and method persistence. This is the primary write

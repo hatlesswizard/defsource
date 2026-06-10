@@ -134,3 +134,25 @@ CREATE INDEX IF NOT EXISTS idx_cp_session_status ON crawl_progress(session_id, s
 
 UPDATE schema_meta SET value = '2' WHERE key = 'version';
 `
+
+// migrationV3 advances the schema to version 3. Adds language-aware columns and
+// crawl session versioning for the multi-language expansion.
+const migrationV3 = `
+ALTER TABLE libraries ADD COLUMN language TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE entities ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public';
+
+ALTER TABLE entities ADD COLUMN is_deprecated INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE methods ADD COLUMN is_deprecated INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE crawl_sessions ADD COLUMN version TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_libraries_language ON libraries(language);
+
+CREATE INDEX IF NOT EXISTS idx_entities_visibility ON entities(visibility);
+
+UPDATE libraries SET language = 'php' WHERE id = '/wordpress';
+
+UPDATE schema_meta SET value = '3' WHERE key = 'version';
+`

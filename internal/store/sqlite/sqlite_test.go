@@ -82,22 +82,22 @@ func seedEntity(t *testing.T, s *SQLiteStore, libraryID, slug string) int64 {
 
 // ─── 1. Migration idempotence ────────────────────────────────────────────────
 
-// TestNew_CreatesSchemaAndMigrations verifies that New runs both migrations
-// without error and that schema_meta reflects version "2".
+// TestNew_CreatesSchemaAndMigrations verifies that New runs all migrations
+// without error and that schema_meta reflects version "3".
 func TestNew_CreatesSchemaAndMigrations(t *testing.T) {
 	s, dbPath := newTestStore(t)
 	_ = dbPath // dbPath held for the re-open test below
 
 	ctx := context.Background()
 
-	// Verify schema_meta version is "2" after both migrations run.
+	// Verify schema_meta version is "3" after all migrations run.
 	var version string
 	err := s.db.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = 'version'`).Scan(&version)
 	if err != nil {
 		t.Fatalf("reading schema_meta: %v", err)
 	}
-	if version != "2" {
-		t.Errorf("schema_meta version = %q; want %q", version, "2")
+	if version != "3" {
+		t.Errorf("schema_meta version = %q; want %q", version, "3")
 	}
 
 	// Verify that critical tables exist by querying them.

@@ -59,10 +59,10 @@ type Config struct {
 	// Env: DEFSOURCE_CORS_ORIGIN. Default: "*".
 	CORSOrigin string
 
-	// CacheDir is the directory where downloaded WordPress source tarballs are
-	// extracted and cached (one subdirectory per version).
-	// Env: DEFSOURCE_CACHE_DIR. Default: <os.UserCacheDir>/defsource/wpgithub,
-	// falling back to "./data/cache/wpgithub" when the user cache dir is unavailable.
+	// CacheDir is the directory where downloaded source repositories are
+	// extracted and cached (one subdirectory per owner/repo/version).
+	// Env: DEFSOURCE_CACHE_DIR. Default: <os.UserCacheDir>/defsource/sources,
+	// falling back to "./data/cache" when the user cache dir is unavailable.
 	CacheDir string
 
 	// WPVersion is the WordPress release to download. Empty means resolve the
@@ -98,14 +98,11 @@ func Load() Config {
 	}
 }
 
-// defaultCacheDir returns the default directory for cached WordPress source
-// downloads: <os.UserCacheDir>/defsource/wpgithub, falling back to a path under
-// the working directory when the user cache dir cannot be determined.
 func defaultCacheDir() string {
 	if dir, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(dir, "defsource", "wpgithub")
+		return filepath.Join(dir, "defsource", "sources")
 	}
-	return filepath.Join(".", "data", "cache", "wpgithub")
+	return filepath.Join(".", "data", "cache")
 }
 
 // envOr returns the value of the environment variable named by key, or

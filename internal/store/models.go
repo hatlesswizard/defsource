@@ -20,6 +20,7 @@ type LibraryRecord struct {
 	Description  string    `json:"description"`
 	SourceURL    string    `json:"source_url"`
 	Version      string    `json:"version"`
+	Language     string    `json:"language"`
 	TrustScore   float64   `json:"trust_score"`
 	SnippetCount int       `json:"snippet_count"`
 	CrawledAt    time.Time `json:"crawled_at"`

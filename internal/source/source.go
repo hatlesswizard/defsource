@@ -1,7 +1,8 @@
 // Package source defines the Source interface and the data-transfer types that
-// flow between a source adapter and the crawler. Each documentation framework
-// (WordPress, Laravel, React, etc.) provides a concrete Source implementation;
-// the crawler consumes the interface without knowing which framework is in use.
+// flow between a source adapter and the crawler. Each documentation source
+// (PHP/WordPress, Go/stdlib, Python/Django, etc.) provides a concrete Source
+// implementation; the crawler consumes the interface without knowing which
+// language or framework is in use.
 //
 // Data types in this package (LibraryMeta, Entity, Property, Method, Parameter,
 // Relation, DocSnippet) are intentionally plain DTOs — all exported fields, no
@@ -24,69 +25,73 @@ package source
 import "context"
 
 // Source defines the contract for a documentation source adapter.
-// Each documentation framework (WordPress, Laravel, React, etc.)
+// Each documentation source (PHP/WordPress, Go/stdlib, Python/Django, etc.)
 // implements this interface. The crawler uses it generically.
 //
-// # Lifecycle and temporal coupling
+// # Terminology
 //
-// The seven methods on Source must be called in a specific order. The crawler
-// always follows this sequence:
+//   - "entityID": A string that uniquely identifies an entity within its source.
+//     For local-source parsers this is typically an absolute filesystem path with
+//     an optional fragment: "/path/to/file.ext#EntityName". The fragment identifies
+//     a specific entity within a multi-entity file.
+//   - "content": The raw bytes of the file identified by the entityID (with fragment
+//     stripped). The Fetcher reads the file path; the Source parses the content.
+//
+// # Lifecycle
 //
 //  1. ID and Meta may be called at any time after construction.
 //  2. DiscoverEntities must be called before DetectWrapper, ResolveWrapperURL,
-//     or ParseSourceCode. Implementations typically build an internal index of
-//     the codebase during DiscoverEntities; calling wrapper-resolution methods
-//     before this step produces empty or incorrect results (they return zero
-//     values rather than errors — a known temporal coupling that is documented
-//     here rather than restructured, per Wave-1 scope constraints).
-//  3. ParseEntity and ParseMethod may be called concurrently by multiple
-//     crawler goroutines after DiscoverEntities completes.
+//     or ParseSourceCode.
+//  3. ParseEntity and ParseMethod may be called concurrently after DiscoverEntities.
 //  4. DetectWrapper, ResolveWrapperURL, and ParseSourceCode are called during
-//     wrapper chain resolution, also concurrently after DiscoverEntities.
+//     wrapper chain resolution, concurrently after DiscoverEntities.
 //
 // Implementations are responsible for thread safety on all methods that are
 // called concurrently (steps 3 and 4 above).
 type Source interface {
-	// ID returns the canonical library ID (e.g., "/wordpress/classes").
+	// ID returns the canonical library ID (e.g., "/wordpress", "go/stdlib").
 	ID() string
 
 	// Meta returns metadata for the library record.
 	Meta() LibraryMeta
 
-	// DiscoverEntities returns URLs of all top-level entities to crawl.
-	// The fetch function is provided by the crawler and is rate-limited.
-	// DiscoverEntities must be called before DetectWrapper, ResolveWrapperURL,
-	// or ParseSourceCode; those methods depend on the internal index built here.
+	// DiscoverEntities returns identifiers for all top-level entities to crawl.
+	// Each identifier is an absolute file path optionally suffixed with a fragment
+	// (#EntityName) that uniquely identifies one entity in a multi-entity file.
+	// The fetch function is provided by the crawler for sources that need to
+	// read remote resources during discovery (most local sources ignore it).
 	DiscoverEntities(ctx context.Context, fetch FetchFunc) ([]string, error)
 
-	// ParseEntity parses a single entity page and returns its data
-	// plus a list of method URLs to crawl next.
-	ParseEntity(ctx context.Context, url string, body []byte) (*Entity, []string, error)
+	// ParseEntity parses a single entity from file content, identified by entityID.
+	// Returns the entity data plus a list of method identifiers to crawl next.
+	// For multi-entity files, the implementation uses the fragment in entityID to
+	// locate the specific entity within the content bytes.
+	ParseEntity(ctx context.Context, entityID string, content []byte) (*Entity, []string, error)
 
-	// ParseMethod parses a single method/function detail page.
-	ParseMethod(ctx context.Context, url string, body []byte) (*Method, error)
+	// ParseMethod parses a single method/function from file content.
+	// The methodID contains a fragment identifying the specific method.
+	ParseMethod(ctx context.Context, methodID string, content []byte) (*Method, error)
 
 	// DetectWrapper analyzes a method's source code and returns wrapper info.
-	// Returns (isWrapper, targetName, targetKind) where targetKind is
-	// "function", "self_method", or "static_method".
-	// Returns (false, "", "") if the method is not a wrapper, or if
-	// DiscoverEntities has not yet been called.
+	// Returns (isWrapper, targetName, targetKind) where targetKind is a
+	// language-specific delegation category (e.g., "function", "self_method",
+	// "static_method" for PHP; "method", "function" for Go).
+	// Returns (false, "", "") if the method is not a wrapper.
 	DetectWrapper(method *Method) (bool, string, string)
 
-	// ResolveWrapperURL constructs the URL to fetch the wrapped method's page.
-	// Returns an empty string if the target cannot be resolved or if
-	// DiscoverEntities has not yet been called.
+	// ResolveWrapperURL constructs the identifier to fetch the wrapped target's
+	// source. Returns an empty string if the target cannot be resolved.
 	ResolveWrapperURL(targetName, targetKind, entitySlug string) string
 
-	// ParseSourceCode extracts just the source code from a page body.
-	// Called during wrapper chain resolution to obtain the source of a
-	// delegated-to function or method.
-	ParseSourceCode(url string, body []byte) (string, error)
+	// ParseSourceCode extracts just the source code of a specific entity or
+	// method from file content, using the fragment in the identifier.
+	ParseSourceCode(entityID string, content []byte) (string, error)
 }
 
-// FetchFunc is a rate-limited HTTP fetch function provided by the crawler.
-// Implementations must honour context cancellation.
-type FetchFunc func(ctx context.Context, url string) ([]byte, error)
+// FetchFunc is a rate-limited fetch function provided by the crawler.
+// For local sources it reads files from disk. Implementations must honour
+// context cancellation.
+type FetchFunc func(ctx context.Context, id string) ([]byte, error)
 
 // LibraryMeta is a DTO that carries metadata for library registration.
 // Returned by Source.Meta and passed directly to store.Store.UpsertLibrary.
@@ -95,25 +100,28 @@ type LibraryMeta struct {
 	Description string
 	SourceURL   string
 	Version     string
+	Language    string // "php", "go", "python", "javascript", "typescript", "java", "c", "cpp", "csharp", "ruby", "rust"
 	TrustScore  float64
 }
 
 // Entity is a DTO that represents a top-level documentation entity (class,
-// interface, trait, or stand-alone function) as returned by ParseEntity.
-// Kind is one of "class", "interface", "trait", or "function".
+// interface, trait, struct, enum, module, or stand-alone function) as returned
+// by ParseEntity. Kind should be one of the Kind* constants from kinds.go.
 type Entity struct {
 	Slug        string
 	Name        string
-	Kind        string // "class", "interface", "trait", "function"
+	Kind        string // Use KindClass, KindFunction, etc.
 	Description string
 	SourceFile  string
 	SourceCode  string
 	URL         string
+	Visibility  string // "public", "protected", "private", "internal", "package"; empty defaults to "public"
+	Deprecated  bool
 	Properties  []Property
 }
 
-// Property is a DTO that represents a class or interface property as parsed
-// from PHPDoc. Visibility is one of "public", "protected", or "private".
+// Property is a DTO that represents a class/struct field or property.
+// Visibility is one of "public", "protected", "private", or empty (defaults to "public").
 type Property struct {
 	Name        string
 	Type        string
@@ -139,55 +147,55 @@ type Method struct {
 	WrappedMethod string
 	URL           string
 	Since         string
+	Deprecated    bool
 	Relations     []Relation
 }
 
 // Parameter is a DTO that describes a single function or method parameter.
-// Required is false when the PHPDoc description begins with "Optional".
 //
 // This is the canonical definition; defsource.Parameter is a type alias for
 // this type (type Parameter = source.Parameter). Callers using either name
 // are working with identical types — no conversion is needed.
 type Parameter struct {
-	// Name is the PHP parameter name including the leading dollar sign (e.g., "$post_id").
+	// Name is the parameter name (e.g., "$post_id" in PHP, "ctx" in Go).
 	Name string `json:"name"`
 
-	// Type is the PHP type annotation (e.g., "int", "WP_Post|null").
+	// Type is the type annotation as it appears in source
+	// (e.g., "int", "WP_Post|null", "Vec<u8>", "List[int]").
 	Type string `json:"type"`
 
-	// Required is true when the parameter has no default value and is not
-	// described as optional in the PHPDoc.
+	// Required is true when the parameter has no default value.
 	Required bool `json:"required"`
 
-	// Description is the PHPDoc text for this parameter.
+	// Description is the doc comment text for this parameter.
 	Description string `json:"description"`
 }
 
-// Relation is a DTO that represents a PHPDoc cross-reference (@see or @uses)
-// from a method to another function or method. Kind is "uses" for both tag
-// types. TargetName uses WordPress method-reference notation, e.g.
-// "WP_Query::get_posts()".
+// Relation is a DTO that represents a cross-reference from a method to another
+// entity. Language-neutral vocabulary for Kind: "calls", "called_by",
+// "implements", "extends", "throws", "uses", "used_by", "overrides".
 //
 // This is the canonical definition; defsource.Relation is a type alias for
 // this type (type Relation = source.Relation).
 type Relation struct {
-	// Kind is the relationship type, either "uses" (this method calls the target)
-	// or "used_by" (this method is called by the target).
+	// Kind is the relationship type (e.g., "uses", "used_by", "calls",
+	// "implements", "extends", "overrides").
 	Kind string `json:"kind"`
 
-	// TargetName is the PHP name of the related class or method.
+	// TargetName is the qualified name of the related entity
+	// (e.g., "WP_Query::get_posts()", "net/http.Server").
 	TargetName string `json:"target_name"`
 
 	// TargetURL is the canonical documentation URL of the related entity,
 	// if available.
 	TargetURL string `json:"target_url,omitempty"`
 
-	// Description is any additional PHPDoc text associated with the relation.
+	// Description is any additional text associated with the relation.
 	Description string `json:"description,omitempty"`
 }
 
 // DocSnippet is the canonical DTO for a single documentation entry returned by
-// QueryDocs. It represents either a class-level or method-level snippet and
+// QueryDocs. It represents either an entity-level or method-level snippet and
 // carries all fields needed for Markdown formatting by the search package.
 //
 // This is the canonical definition; defsource.DocSnippet is a type alias for
@@ -197,46 +205,43 @@ type Relation struct {
 // Relevance and Relations are populated by the query client after retrieval;
 // they are not used by the formatter and may be zero.
 type DocSnippet struct {
-	// EntityName is the name of the PHP class or function (e.g., "WP_Query").
+	// EntityName is the name of the entity (e.g., "WP_Query", "http.Server").
 	EntityName string `json:"entity_name"`
 
-	// MethodName is the name of the method within the entity, if this snippet
-	// is method-level. Empty for class-level snippets.
+	// MethodName is the name of the method, empty for entity-level snippets.
 	MethodName string `json:"method_name,omitempty"`
 
-	// Signature is the full PHP method signature including parameters and return
-	// type, if available.
+	// Signature is the full method/function signature.
 	Signature string `json:"signature,omitempty"`
 
-	// Description is the PHPDoc summary for this entity or method.
+	// Description is the documentation summary.
 	Description string `json:"description"`
 
-	// Parameters lists the documented parameters for this method.
+	// Parameters lists the documented parameters.
 	Parameters []Parameter `json:"parameters,omitempty"`
 
-	// ReturnType is the PHP type of the method's return value.
+	// ReturnType is the return type annotation.
 	ReturnType string `json:"return_type,omitempty"`
 
-	// ReturnDesc is the PHPDoc description of the return value.
+	// ReturnDesc is the description of the return value.
 	ReturnDesc string `json:"return_desc,omitempty"`
 
-	// SourceCode is the PHP source of the entity or method body.
+	// SourceCode is the source of the entity or method body.
 	SourceCode string `json:"source_code"`
 
-	// WrappedSource is the source code of the underlying function that this
-	// method delegates to, when wrapper detection resolves a chain.
+	// WrappedSource is the source code of the underlying delegated-to function.
 	WrappedSource string `json:"wrapped_source,omitempty"`
 
 	// WrappedMethod is the name of the underlying delegated-to method.
 	WrappedMethod string `json:"wrapped_method,omitempty"`
 
-	// URL is the canonical documentation URL for this snippet.
+	// URL is the canonical source/documentation URL.
 	URL string `json:"url"`
 
 	// Relevance is the BM25 rank score. Lower (more negative) values indicate
 	// higher relevance.
 	Relevance float64 `json:"relevance"`
 
-	// Relations lists cross-references to related methods (e.g., @uses, @see).
+	// Relations lists cross-references to related methods.
 	Relations []Relation `json:"relations,omitempty"`
 }

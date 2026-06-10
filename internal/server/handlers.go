@@ -163,16 +163,86 @@ func (h *handlers) queryDocs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// queryDocsByLanguage handles GET /api/v1/docs/language.
+// Required query parameters: language, query.
+// Optional parameters: format ("json" or "markdown", default "markdown"), mode ("all" or "any", default "all").
+func (h *handlers) queryDocsByLanguage(w http.ResponseWriter, r *http.Request) {
+	params, ok := validateQueryRequest(w, r, "language", 50)
+	if !ok {
+		return
+	}
+
+	format := r.URL.Query().Get("format")
+
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = "all"
+	}
+	if mode != "all" && mode != "any" {
+		writeError(w, http.StatusBadRequest, "mode must be 'all' or 'any'")
+		return
+	}
+
+	result, err := h.client.QueryDocsByLanguage(r.Context(), params.id, params.query, defsource.WithSearchMode(mode))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no libraries found for language")
+			return
+		}
+		log.Printf("queryDocsByLanguage error: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if result.Snippets == nil {
+		result.Snippets = make([]defsource.DocSnippet, 0)
+	}
+
+	if format == "json" {
+		writeJSON(w, http.StatusOK, result)
+	} else {
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		body := result.Text
+		if strings.TrimSpace(body) == "" {
+			body = "No results found for query '" + params.query + "' in language '" + params.id + "'"
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			log.Printf("queryDocsByLanguage: write response error: %v", err)
+		}
+	}
+}
+
 // listLibraries handles GET /api/v1/libraries.
-// Returns a JSON object {"libraries": [...]} listing all indexed libraries.
+// Optional query parameter: language (filter by programming language).
+// Returns a JSON object {"libraries": [...]} listing indexed libraries.
 func (h *handlers) listLibraries(w http.ResponseWriter, r *http.Request) {
-	libs, err := h.client.ListLibraries(r.Context())
+	language := strings.TrimSpace(r.URL.Query().Get("language"))
+
+	var libs []defsource.Library
+	var err error
+	if language != "" {
+		libs, err = h.client.ListLibrariesByLanguage(r.Context(), language)
+	} else {
+		libs, err = h.client.ListLibraries(r.Context())
+	}
 	if err != nil {
 		log.Printf("listLibraries error: %v", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"libraries": libs})
+}
+
+// listLanguages handles GET /api/v1/languages.
+// Returns a JSON object {"languages": [...]} listing available languages with framework counts.
+func (h *handlers) listLanguages(w http.ResponseWriter, r *http.Request) {
+	langs, err := h.client.ListLanguages(r.Context())
+	if err != nil {
+		log.Printf("listLanguages error: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"languages": langs})
 }
 
 // listEntities handles GET /api/v1/entities.

@@ -5,7 +5,7 @@ build:
 	CGO_ENABLED=1 go build -tags sqlite_fts5 -o bin/defsource-server ./cmd/defsource-server
 
 crawl: build
-	./bin/defsource-crawl --source=wpgithub --db=./data/defsource.db
+	./bin/defsource-crawl --source=php/wordpress --db=./data/defsource.db
 
 server: build
 	./bin/defsource-server --db=./data/defsource.db --addr=:8080

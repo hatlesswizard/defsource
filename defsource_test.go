@@ -167,6 +167,19 @@ func (m *mockStore) ListLibraries(_ context.Context) ([]store.LibraryRecord, err
 	return out, nil
 }
 
+func (m *mockStore) ListLibrariesByLanguage(_ context.Context, language string) ([]store.LibraryRecord, error) {
+	if m.listLibrariesErr != nil {
+		return nil, m.listLibrariesErr
+	}
+	var out []store.LibraryRecord
+	for _, r := range m.libraries {
+		if r.Language == language {
+			out = append(out, *r)
+		}
+	}
+	return out, nil
+}
+
 // ---- Entity / method methods -----------------------------------------------
 
 func (m *mockStore) UpsertEntity(_ context.Context, _ string, _ *source.Entity) (int64, error) {

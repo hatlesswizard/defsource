@@ -227,6 +227,21 @@ func (c *Client) ListLibraries(ctx context.Context) ([]Library, error) {
 	return libs, nil
 }
 
+// ListLibrariesByLanguage returns indexed libraries filtered by programming language.
+// SnippetCount is computed on demand for libraries whose stored count is zero.
+func (c *Client) ListLibrariesByLanguage(ctx context.Context, language string) ([]Library, error) {
+	records, err := c.store.ListLibrariesByLanguage(ctx, language)
+	if err != nil {
+		return nil, fmt.Errorf("list libraries by language: %w", err)
+	}
+	libs := make([]Library, len(records))
+	for i, r := range records {
+		libs[i] = libraryFromRecord(r)
+		c.populateSnippetCount(ctx, &libs[i])
+	}
+	return libs, nil
+}
+
 // ListEntities returns summary information about every entity (class or function)
 // belonging to the library identified by libraryID.
 func (c *Client) ListEntities(ctx context.Context, libraryID string) ([]EntityInfo, error) {
@@ -252,6 +267,84 @@ func (c *Client) ListEntities(ctx context.Context, libraryID string) ([]EntityIn
 	return result, nil
 }
 
+// ListLanguages returns all distinct languages that have at least one indexed
+// library in the store, along with the count of libraries per language.
+func (c *Client) ListLanguages(ctx context.Context) ([]LanguageInfo, error) {
+	libs, err := c.store.ListLibraries(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list libraries: %w", err)
+	}
+	counts := make(map[string]int)
+	for _, r := range libs {
+		if r.Language != "" {
+			counts[r.Language]++
+		}
+	}
+	result := make([]LanguageInfo, 0, len(counts))
+	for lang, count := range counts {
+		result = append(result, LanguageInfo{Language: lang, FrameworkCount: count})
+	}
+	// Sort alphabetically for stable output.
+	for i := range result {
+		for j := i + 1; j < len(result); j++ {
+			if result[j].Language < result[i].Language {
+				result[i], result[j] = result[j], result[i]
+			}
+		}
+	}
+	return result, nil
+}
+
+// QueryDocsByLanguage performs a cross-library documentation search within a single
+// language. It queries all libraries for the given language and merges results by
+// relevance. The returned DocResult uses "cross-language" as the Library field.
+func (c *Client) QueryDocsByLanguage(ctx context.Context, language, query string, opts ...QueryOption) (*DocResult, error) {
+	records, err := c.store.ListLibrariesByLanguage(ctx, language)
+	if err != nil {
+		return nil, fmt.Errorf("list libraries by language: %w", err)
+	}
+	if len(records) == 0 {
+		return &DocResult{
+			Library:  language,
+			Query:    query,
+			Snippets: make([]DocSnippet, 0),
+			Text:     "No libraries found for language '" + language + "'",
+		}, nil
+	}
+
+	var allSnippets []DocSnippet
+	for _, rec := range records {
+		result, err := c.QueryDocs(ctx, rec.ID, query, opts...)
+		if err != nil {
+			continue // skip libraries that fail (e.g., not indexed yet)
+		}
+		allSnippets = append(allSnippets, result.Snippets...)
+	}
+
+	// Sort by relevance (lower/more negative = better match).
+	for i := range allSnippets {
+		for j := i + 1; j < len(allSnippets); j++ {
+			if allSnippets[j].Relevance < allSnippets[i].Relevance {
+				allSnippets[i], allSnippets[j] = allSnippets[j], allSnippets[i]
+			}
+		}
+	}
+
+	// Cap at 20 results.
+	if len(allSnippets) > 20 {
+		allSnippets = allSnippets[:20]
+	}
+
+	text := search.FormatDocSnippets(allSnippets, c.tokenBudget)
+
+	return &DocResult{
+		Library:  language,
+		Query:    query,
+		Snippets: allSnippets,
+		Text:     text,
+	}, nil
+}
+
 // libraryFromRecord converts a store.LibraryRecord to the public Library type.
 // Both ResolveLibrary and ListLibraries share this mapping; centralising it here
 // ensures any field addition is applied in both call sites automatically.
@@ -262,6 +355,7 @@ func libraryFromRecord(r store.LibraryRecord) Library {
 		Description:  r.Description,
 		SourceURL:    r.SourceURL,
 		Version:      r.Version,
+		Language:     r.Language,
 		TrustScore:   r.TrustScore,
 		SnippetCount: r.SnippetCount,
 		CrawledAt:    r.CrawledAt,

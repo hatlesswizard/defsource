@@ -54,12 +54,51 @@ func New(dbPath string) (*SQLiteStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("run migrations v2: %w", err)
 	}
+	if err := runMigrationV3(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("run migrations v3: %w", err)
+	}
 	return &SQLiteStore{db: db}, nil
 }
 
 // Close closes the underlying database connection.
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
+}
+
+// runMigrationV3 applies the V3 migration idempotently. SQLite ALTER TABLE
+// ADD COLUMN fails if the column already exists, so we check whether the
+// columns are present before running each ALTER. This avoids errors when
+// re-opening databases that are already at V3+ (since the V1/V2 migrations
+// unconditionally UPDATE schema_meta.version on each open).
+func runMigrationV3(db *sql.DB) error {
+	if hasColumn(db, "libraries", "language") {
+		return nil
+	}
+	_, err := db.Exec(migrationV3)
+	return err
+}
+
+func hasColumn(db *sql.DB, table, column string) bool {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return false
+		}
+		if name == column {
+			return true
+		}
+	}
+	return false
 }
 
 // UpsertLibrary inserts or updates a library record identified by id using the
@@ -71,17 +110,18 @@ func (s *SQLiteStore) UpsertLibrary(ctx context.Context, id string, meta source.
 	defer s.mu.Unlock()
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO libraries (id, name, description, source_url, version, trust_score, crawled_at)
-		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO libraries (id, name, description, source_url, version, language, trust_score, crawled_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			description = excluded.description,
 			source_url = excluded.source_url,
 			version = excluded.version,
+			language = excluded.language,
 			trust_score = excluded.trust_score,
 			crawled_at = CURRENT_TIMESTAMP,
 			updated_at = CURRENT_TIMESTAMP`,
-		id, meta.Name, meta.Description, meta.SourceURL, meta.Version, meta.TrustScore)
+		id, meta.Name, meta.Description, meta.SourceURL, meta.Version, meta.Language, meta.TrustScore)
 	return err
 }
 
@@ -89,13 +129,13 @@ func (s *SQLiteStore) UpsertLibrary(ctx context.Context, id string, meta source.
 // when no such library exists.
 func (s *SQLiteStore) GetLibrary(ctx context.Context, id string) (*store.LibraryRecord, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, description, source_url, version, trust_score, snippet_count,
-		       COALESCE(crawled_at, ''), created_at, updated_at
+		SELECT id, name, description, source_url, version, COALESCE(language, ''),
+		       trust_score, snippet_count, COALESCE(crawled_at, ''), created_at, updated_at
 		FROM libraries WHERE id = ?`, id)
 	var rec store.LibraryRecord
 	var crawledAt string
 	err := row.Scan(&rec.ID, &rec.Name, &rec.Description, &rec.SourceURL,
-		&rec.Version, &rec.TrustScore, &rec.SnippetCount,
+		&rec.Version, &rec.Language, &rec.TrustScore, &rec.SnippetCount,
 		&crawledAt, &rec.CreatedAt, &rec.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
@@ -113,8 +153,8 @@ func (s *SQLiteStore) GetLibrary(ctx context.Context, id string) (*store.Library
 // (case-insensitive LIKE match). Results are ordered by trust_score descending.
 func (s *SQLiteStore) SearchLibraries(ctx context.Context, query string) ([]store.LibraryRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, description, source_url, version, trust_score, snippet_count,
-		       COALESCE(crawled_at, ''), created_at, updated_at
+		SELECT id, name, description, source_url, version, COALESCE(language, ''),
+		       trust_score, snippet_count, COALESCE(crawled_at, ''), created_at, updated_at
 		FROM libraries
 		WHERE name LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\' OR id LIKE ? ESCAPE '\'
 		ORDER BY trust_score DESC`,
@@ -129,9 +169,22 @@ func (s *SQLiteStore) SearchLibraries(ctx context.Context, query string) ([]stor
 // ListLibraries returns all library records ordered alphabetically by name.
 func (s *SQLiteStore) ListLibraries(ctx context.Context) ([]store.LibraryRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, description, source_url, version, trust_score, snippet_count,
-		       COALESCE(crawled_at, ''), created_at, updated_at
+		SELECT id, name, description, source_url, version, COALESCE(language, ''),
+		       trust_score, snippet_count, COALESCE(crawled_at, ''), created_at, updated_at
 		FROM libraries ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanLibraries(rows)
+}
+
+// ListLibrariesByLanguage returns library records filtered by language.
+func (s *SQLiteStore) ListLibrariesByLanguage(ctx context.Context, language string) ([]store.LibraryRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, description, source_url, version, COALESCE(language, ''),
+		       trust_score, snippet_count, COALESCE(crawled_at, ''), created_at, updated_at
+		FROM libraries WHERE language = ? ORDER BY name`, language)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +198,7 @@ func scanLibraries(rows *sql.Rows) ([]store.LibraryRecord, error) {
 		var rec store.LibraryRecord
 		var crawledAt string
 		if err := rows.Scan(&rec.ID, &rec.Name, &rec.Description, &rec.SourceURL,
-			&rec.Version, &rec.TrustScore, &rec.SnippetCount,
+			&rec.Version, &rec.Language, &rec.TrustScore, &rec.SnippetCount,
 			&crawledAt, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -577,9 +630,9 @@ func (s *SQLiteStore) GetCrawlStats(ctx context.Context, sessionID int64) (*stor
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*),
-		       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),
-		       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
-		       SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END)
+		       COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0)
 		FROM crawl_progress WHERE session_id = ?`, sessionID).
 		Scan(&stats.Total, &stats.Success, &stats.Failed, &stats.Skipped)
 	if err != nil {

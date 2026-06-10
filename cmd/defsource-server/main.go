@@ -16,6 +16,7 @@ import (
 	defsource "github.com/hatlesswizard/defsource"
 	"github.com/hatlesswizard/defsource/internal/config"
 	"github.com/hatlesswizard/defsource/internal/server"
+	_ "github.com/hatlesswizard/defsource/internal/source/allsources"
 )
 
 func main() {

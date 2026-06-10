@@ -22,8 +22,10 @@ func New(client *defsource.Client, addr string, corsOrigin string) *http.Server 
 
 	mux.HandleFunc("GET /api/v1/libraries/search", h.searchLibraries)
 	mux.HandleFunc("GET /api/v1/docs", h.queryDocs)
+	mux.HandleFunc("GET /api/v1/docs/language", h.queryDocsByLanguage)
 	mux.HandleFunc("GET /api/v1/libraries", h.listLibraries)
 	mux.HandleFunc("GET /api/v1/entities", h.listEntities)
+	mux.HandleFunc("GET /api/v1/languages", h.listLanguages)
 	mux.HandleFunc("GET /health", h.health)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

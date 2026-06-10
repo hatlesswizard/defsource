@@ -24,6 +24,9 @@ type Library struct {
 	// Version is the version string reported by the source (e.g., "6.5.0").
 	Version string `json:"version"`
 
+	// Language is the programming language of the library (e.g., "php", "python", "go").
+	Language string `json:"language"`
+
 	// TrustScore is a normalised relevance weight in the range [0, 1].
 	TrustScore float64 `json:"trust_score"`
 
@@ -33,6 +36,15 @@ type Library struct {
 
 	// CrawledAt is the time the library was last fully crawled.
 	CrawledAt time.Time `json:"crawled_at"`
+}
+
+// LanguageInfo holds summary information about a supported language.
+type LanguageInfo struct {
+	// Language is the language identifier (e.g., "python", "go", "rust").
+	Language string `json:"language"`
+
+	// FrameworkCount is the number of libraries/frameworks indexed for this language.
+	FrameworkCount int `json:"framework_count"`
 }
 
 // DocResult is the response from QueryDocs.

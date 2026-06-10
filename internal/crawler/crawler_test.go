@@ -175,6 +175,10 @@ func (s *mockStore) ListLibraries(_ context.Context) ([]store.LibraryRecord, err
 	return nil, nil
 }
 
+func (s *mockStore) ListLibrariesByLanguage(_ context.Context, _ string) ([]store.LibraryRecord, error) {
+	return nil, nil
+}
+
 func (s *mockStore) UpsertEntity(_ context.Context, _ string, entity *source.Entity) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
